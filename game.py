@@ -83,8 +83,7 @@ NO_CELL = Cell(-1)
 
 class WorldCell(Cell):
     def __init__(self, index=-1, richness=0, owner=-1, tree=-1, shadow=0, is_dormant=False, neighbors=[NO_CELL for i in range(6)]):
-        #super().__init__(index)
-        self.index = index
+        super().__init__(index)
         self.richness = richness
         self.owner = owner
         self.tree = tree
@@ -94,24 +93,19 @@ class WorldCell(Cell):
     
     def add_neighbor(self, neighbor_cell, direction):
         self.neighbors[direction] = neighbor_cell
-        return
     
     def plant(self, player):
-        if self.tree != -1 or self.owner != -1:
-            assert(False)
-        if self.richness == 0:
-            assert(False)
+        assert(self.index != -1)
+        assert(self.tree == -1)
+        assert(self.owner == -1)
+        assert(self.richness != 0)
         self.tree = 0
         self.owner = player
-        return
     
     def grow(self, player):
-        if self.tree == -1 or self.owner != player:
-            assert(False)
-        if self.tree == 3:
-            assert(False)
+        assert(self.tree in [0, 1, 2])
+        assert(self.owner == player)
         self.tree += 1
-        return
     
     def copy(self):
         return WorldCell(self.index, self.richness, self.owner, self.tree, self.shadow, self.is_dormant, self.neighbors.copy())
@@ -138,30 +132,36 @@ class State:
         return res
     
     def plant(self, player, source, destination, cost=-1):
-        if self.cells[destination].tree != -1 or self.cells[destination].richness == 0:
+        cell = self.get_cell(destination)
+        if cell.index == -1:
             return False
-        if cost == -1: # To not redo the calculation
-                cost = self.tree_cost(player, 0)
-        if self.suns[player] < cost:
+        if cell.tree != -1 or cell.richness == 0:
             return False
-        self.cells[destination].plant(player)
+        # To not redo calculation
+        cost = self.tree_cost(player, 0) if cost == -1 else cost
+        if cost > self.suns[player]:
+            return False
+        cell.plant(player)
         self.trees[player].append(destination)
         self.suns[player] -= cost
-        self.cells[source].is_dormant = True
-        self.cells[destination].is_dormant = True
+        self.get_cell(source).is_dormant = True
+        cell.is_dormant = True
         return True
     
-    def grow(self, player, index, my_tree_cost=-1):
-        size_before = self.cells[index].tree
-        if size_before == -1:
+    def grow(self, player, destination, my_tree_cost=-1):
+        cell = self.get_cell(destination)
+        if cell.index == -1:
             return False
-        first_cost = 1 if size_before == 1 else (3 if size_before == 2 else 7)
+        if (not cell.tree in [0, 1, 2]) or cell.owner != player:
+            return False
+        size_before = cell.tree
+        first_cost = [1, 3, 7][size_before]
+        # To not redo calculation
         cost = first_cost + (self.tree_cost(player, size_before+1) if my_tree_cost == -1 else my_tree_cost)
-        print(player, index, cost, size_before)
         if cost > self.suns[player]:
             return False
         self.suns[player] -= cost
-        self.cells[index].is_dormant = True
+        cell.is_dormant = True
         return True
     
     def update_shadows(self, sun_direction):
@@ -175,14 +175,15 @@ class State:
                     break
                 cell.shadow_size = new_shadow_size
     
-    def next_day(self):
-        self.day += 1
-        self.sun_direction = self.day % 6
-        self.update_shadows(self.sun_direction)
-        for i in range(len(self.suns)):
-            for tree in self.trees[i]:
-                self.suns[i] += self.cells[tree].tree
-        self.wake_all()
+    def next_day(self, num_days = 1):
+        for i in range(num_days):
+            self.day += 1
+            self.sun_direction = self.day % 6
+            self.update_shadows(self.sun_direction)
+            for i in range(len(self.suns)):
+                for tree in self.trees[i]:
+                    self.suns[i] += self.cells[tree].tree
+            self.wake_all()
         return self
     
     def wake_all(self):
@@ -204,6 +205,12 @@ class State:
                 if neighbor != -1 and (neighbor not in visited) and (neighbor not in [to_vis[0] for to_vis in to_visit]) and distance < max_distance:
                     to_visit += [(neighbor.index, distance+1)]
         return res
+    
+    def get_cell(self, index):
+        if index == -1:
+            return NO_CELL
+        else:
+            return self.cells[index]
 
 
 
@@ -252,17 +259,49 @@ class Game:
                 to_stone -= 1   
         self.state = State(day=0, nutrients=20, cells=cells, trees=trees, topology=self.topology)
         self.player_0 = player_0
-        self.player_1 = player_1 
+        self.player_1 = player_1
 
     def get_copy_state(self):
         return self.state.copy()
     
     def play_turn(self):
-        actions_0 = self.player_0.play(self.get_copy_state())
-        actions_1 = self.player_1.play(self.get_copy_state())
-        print(actions_0)
-        print(actions_1)
+        actions_0 = self.player_0.play(self.get_copy_state()).split(' | ')
+        actions_1 = self.player_1.play(self.get_copy_state()).split(' | ')
+        print("Player 0", actions_0)
+        print("Player 1", actions_1)
+        n_0 = len(actions_0)
+        n_1 = len(actions_1)
+        for i in range(max(n_0, n_1)):
+            action_0 = actions_0[i] if n_0 > i else ''
+            action_1 = actions_1[i] if n_1 > i else ''
+            self.play_actions([action_0, action_1])
         self.state.next_day()
+    
+    def play_actions(self, actions = ['', '']):  
+        descriptions = [[], []]
+        for i in range(len(actions)):
+            if actions[i] != '':
+                descriptions[i] = actions[i].split(' ')
+        
+        # Planting at the same spot
+        if actions[0] != '' and actions[0][0] == 'S' and actions[0] == actions[1]:
+            for action, source, destination in descriptions:
+                self.state.get_cell(int(source)).is_dormant = True
+                return
+        
+        for i in range(len(descriptions)):
+            if len(descriptions[i]) < 2:
+                continue
+            if len(descriptions[i]) == 2:
+                action, tree = descriptions[i]
+                self.state.grow(i, int(tree))
+                continue
+            if len(descriptions[i]) == 3:
+                action, source, destination = descriptions[i]
+                self.state.plant(i, int(source), int(destination))
+                continue
+            
+            
 
 
 ##########################
@@ -283,15 +322,28 @@ class IA_1(Player):
         super().__init__(index)
     
     def play(self, state):
-        possibles_actions = []
+        actions = ""
+        possible_actions = {}
         me = self.index
         for tree in state.trees[me]:
+            try_state = state.copy()
+            if try_state.grow(me, tree):
+                future_suns = try_state.next_day(24-try_state.day).suns[me]
+                if not future_suns in possible_actions:
+                    possible_actions[future_suns] = []
+                possible_actions[future_suns].append(('GROW '+str(tree), tree))
+
             for cell in state.nodes_around(tree, state.cells[tree].tree):
                 try_state = state.copy()
                 if try_state.plant(me, tree, cell):
-                    possibles_actions.append(('GROW '+str(cell), try_state.next_day().suns[me]))
-        print(possibles_actions)
-        return ""
+                    future_suns = try_state.next_day(24-try_state.day).suns[me]
+                    if not future_suns in possible_actions:
+                        possible_actions[future_suns] = []
+                    possible_actions[future_suns].append(('SEED '+str(tree)+' '+str(cell), cell))
+        for future_suns in sorted(possible_actions):
+            for action in sorted(possible_actions[future_suns], key=lambda tup : tup[1]):
+                actions += action[0] + " | "
+        return actions + "WAIT"
 
 
 ##########################
@@ -303,7 +355,9 @@ def main():
     player_0 = IA_1(0)
     player_1 = IA_1(1)
     game = Game(player_0, player_1, diameter = 4, first_trees = 2,  first_stones = 2)
-    game.play_turn()
+    for i in range(24):
+        print(game.state.day, game.state.suns)
+        game.play_turn()
     
 
 if __name__ == "__main__":
