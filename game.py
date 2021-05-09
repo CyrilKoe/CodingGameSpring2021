@@ -1,7 +1,6 @@
 import random
 
-MAP_SIZE = 37
-DIAMETER = 4
+TOPO = []
 
 ##########################
 # WORLD GENERATION #######
@@ -40,7 +39,8 @@ def connect_up_side(topology, node, circle, direction):
     return node
 
 def build_map(diameter=4):
-    topology = {i : [-1 for i in range(6)] for i in range(MAP_SIZE)}
+    map_size = sum([6*i for i in range(diameter)])+1
+    topology = {i : [-1 for i in range(6)] for i in range(map_size)}
     connect_circles(topology, diameter)
     for i in range(0, 6):
         add_neighbor(topology, 0, i+1, i)
@@ -70,18 +70,6 @@ def nodes_around(topology, root, max_distance):
                 to_visit += [(neighbor, distance+1)]
     return res
 
-def update_shadows(cells, sun_direction):
-    for cell in cells:
-        cell.shadow_size = 0
-    for cell in cells:
-        new_shadow_size = min(0, cell.tree)
-        for i in range(new_shadow_size):
-            cell = cell.neighbors[sun_direction]
-            if cell.index == -1:
-                break
-            cell.shadow_size = new_shadow_size
-            
-
 
 ##########################
 # WORLD            #######
@@ -95,6 +83,7 @@ NO_CELL = Cell(-1)
 
 class WorldCell(Cell):
     def __init__(self, index=-1, richness=0, owner=-1, tree=-1, shadow=0, is_dormant=False, neighbors=[NO_CELL for i in range(6)]):
+        #super().__init__(index)
         self.index = index
         self.richness = richness
         self.owner = owner
@@ -128,45 +117,121 @@ class WorldCell(Cell):
         return WorldCell(self.index, self.richness, self.owner, self.tree, self.shadow, self.is_dormant, self.neighbors.copy())
 
 class State:
-    def __init__(self, day=0, nutrients=0, cells=[], trees=[]):
+    def __init__(self, day=0, nutrients=0, cells=[], trees=[[],[]], suns=[0, 0], points=[0, 0], topology=[]):
         self.day = day
         self.sun_direction = self.day % 6
         self.nutrients = nutrients
         self.cells = cells.copy()
-        self.trees = []
+        self.trees = [trees[0].copy(), trees[1].copy()]
+        self.suns = suns.copy()
+        self.points = points.copy()
+        self.topology = topology
     
     def copy(self):
-        return State(self.day, self.nutrients, [cell.copy() for cell in self.cells], self.trees.copy())
+        return State(day=self.day, nutrients=self.nutrients, cells=[cell.copy() for cell in self.cells], trees=self.trees.copy(), suns=self.suns.copy(), points=self.points.copy(), topology=self.topology)
     
-    def plant(self, player, index):
-        self.cells[index]
+    def tree_cost(self,player, size):
+        res = 0
+        for cell_tree in self.trees[player]:
+            if self.cells[cell_tree].tree == size:
+                res += 1
+        return res
+    
+    def plant(self, player, source, destination, cost=-1):
+        if self.cells[destination].tree != -1 or self.cells[destination].richness == 0:
+            return False
+        if cost == -1: # To not redo the calculation
+                cost = self.tree_cost(player, 0)
+        if self.suns[player] < cost:
+            return False
+        self.cells[destination].plant(player)
+        self.trees[player].append(destination)
+        self.suns[player] -= cost
+        self.cells[source].is_dormant = True
+        self.cells[destination].is_dormant = True
+        return True
+    
+    def grow(self, player, index, my_tree_cost=-1):
+        size_before = self.cells[index].tree
+        if size_before == -1:
+            return False
+        first_cost = 1 if size_before == 1 else (3 if size_before == 2 else 7)
+        cost = first_cost + (self.tree_cost(player, size_before+1) if my_tree_cost == -1 else my_tree_cost)
+        print(player, index, cost, size_before)
+        if cost > self.suns[player]:
+            return False
+        self.suns[player] -= cost
+        self.cells[index].is_dormant = True
+        return True
+    
+    def update_shadows(self, sun_direction):
+        for cell in self.cells:
+            cell.shadow_size = 0
+        for cell in self.cells:
+            new_shadow_size = min(0, cell.tree)
+            for i in range(new_shadow_size):
+                cell = cell.neighbors[sun_direction]
+                if cell.index == -1:
+                    break
+                cell.shadow_size = new_shadow_size
+    
+    def next_day(self):
+        self.day += 1
+        self.sun_direction = self.day % 6
+        self.update_shadows(self.sun_direction)
+        for i in range(len(self.suns)):
+            for tree in self.trees[i]:
+                self.suns[i] += self.cells[tree].tree
+        self.wake_all()
+        return self
+    
+    def wake_all(self):
+        for player_trees in self.trees:
+            for tree_cell in player_trees:
+                self.cells[tree_cell].is_dormant = False
+
+    def nodes_around(self, root, max_distance):
+        res = []
+        to_visit = [(root, 0)]
+        visited = []
+        while len(to_visit) > 0:
+            node, distance = to_visit[0]
+            visited += [node]
+            to_visit = to_visit[1:]
+
+            res.append(node)
+            for neighbor in self.cells[node].neighbors:
+                if neighbor != -1 and (neighbor not in visited) and (neighbor not in [to_vis[0] for to_vis in to_visit]) and distance < max_distance:
+                    to_visit += [(neighbor.index, distance+1)]
+        return res
+
 
 
 class Game:
-    def __init__(self):
-        self.topology = build_map(diameter=DIAMETER)
-        self.players = []
+    def __init__(self, player_0, player_1, diameter=4, first_trees=2, first_stones=2):
+        self.topology = build_map(diameter)
+
         # Richness
         self.richness = {}
-        nodes_distances = nodes_around(self.topology, 0, DIAMETER-1)
+        nodes_distances = nodes_around(self.topology, 0, diameter-1)
         for distance in nodes_distances:
             nodes_distances[distance].sort()
             for node in nodes_distances[distance]:
-                self.richness[node] = DIAMETER-distance if distance > 1 else 3
+                self.richness[node] = diameter-distance if distance > 1 else 3
         # Cells
         cells = []
         for cell_idx in self.topology:
-            cells += [WorldCell(cell_idx, self.richness[cell_idx])]
+            cells += [WorldCell(index=cell_idx, richness=self.richness[cell_idx])]
         for cell in cells:
             for direction, neighbor_idx in enumerate(self.topology[cell.index]):
                 if self.topology[cell.index][direction] != -1:
                     cell.add_neighbor(cells[neighbor_idx], direction)
-
         # Firsts trees and stones
-        to_plant = 2
-        to_stone = 2
+        to_plant = first_trees
+        to_stone = first_stones
+        trees = [[], []]
         while to_plant+to_stone > 0:
-            dist = random.randint(1, 3)
+            dist = random.randint(1, diameter-1)
             n = len(nodes_distances[dist])
             idx = random.randint(0, n-1)
             cell_idx_1 = nodes_distances[dist][idx]
@@ -175,27 +240,29 @@ class Game:
                 continue
             if to_plant > 0:
                 cells[cell_idx_1].plant(0)
+                cells[cell_idx_1].tree = 1
                 cells[cell_idx_2].plant(1)
+                cells[cell_idx_2].tree = 1
                 to_plant -= 1
+                trees[0].append(cell_idx_1)
+                trees[1].append(cell_idx_2)
             elif to_stone > 0:
                 cells[cell_idx_1].richness = 0
                 cells[cell_idx_2].richness = 0
-                to_stone -= 1
-    
-        self.state = State(0, 20, cells)
+                to_stone -= 1   
+        self.state = State(day=0, nutrients=20, cells=cells, trees=trees, topology=self.topology)
+        self.player_0 = player_0
+        self.player_1 = player_1 
 
     def get_copy_state(self):
         return self.state.copy()
     
-    def add_player(self, player):
-        self.players.append(player) 
-    
     def play_turn(self):
-        self.sun_direction = self.day % 6
-
-        self.day += 1
-
-
+        actions_0 = self.player_0.play(self.get_copy_state())
+        actions_1 = self.player_1.play(self.get_copy_state())
+        print(actions_0)
+        print(actions_1)
+        self.state.next_day()
 
 
 ##########################
@@ -206,7 +273,25 @@ class Game:
 class Player:
     def __init__(self, index):
         self.index = index
+    
+    def play(self, state):
+        actions = ""
+        return actions
 
+class IA_1(Player):
+    def __init__(self, index):
+        super().__init__(index)
+    
+    def play(self, state):
+        possibles_actions = []
+        me = self.index
+        for tree in state.trees[me]:
+            for cell in state.nodes_around(tree, state.cells[tree].tree):
+                try_state = state.copy()
+                if try_state.plant(me, tree, cell):
+                    possibles_actions.append(('GROW '+str(cell), try_state.next_day().suns[me]))
+        print(possibles_actions)
+        return ""
 
 
 ##########################
@@ -215,9 +300,10 @@ class Player:
 
 
 def main():
-    game = Game()
-
-    new_state = game.get_copy_state()
+    player_0 = IA_1(0)
+    player_1 = IA_1(1)
+    game = Game(player_0, player_1, diameter = 4, first_trees = 2,  first_stones = 2)
+    game.play_turn()
     
 
 if __name__ == "__main__":
