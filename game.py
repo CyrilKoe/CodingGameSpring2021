@@ -1,4 +1,5 @@
 import random
+import numpy as np
 
 TOPO = []
 
@@ -51,9 +52,6 @@ def build_map(diameter=4):
                 node = connect_up_side(topology, node, circle, direction)
     return topology
 
-##########################
-# USEFUL FUNCTIONS #######
-##########################
 
 def nodes_around(topology, root, max_distance):
     res = {i : [] for i in range(max_distance+1)}
@@ -74,6 +72,7 @@ def nodes_around(topology, root, max_distance):
 ##########################
 # WORLD            #######
 ##########################
+
 
 class Cell:
     def __init__(self, index):
@@ -99,19 +98,27 @@ class WorldCell(Cell):
         assert(self.tree == -1)
         assert(self.owner == -1)
         assert(self.richness != 0)
+        assert(not self.is_dormant)
         self.tree = 0
         self.owner = player
     
     def grow(self, player):
         assert(self.tree in [0, 1, 2])
         assert(self.owner == player)
+        assert(not self.is_dormant)
         self.tree += 1
     
     def copy(self):
         return WorldCell(self.index, self.richness, self.owner, self.tree, self.shadow, self.is_dormant, self.neighbors.copy())
 
+
+##########################
+# STATE            #######
+##########################
+
+
 class State:
-    def __init__(self, day=0, nutrients=0, cells=[], trees=[[],[]], suns=[0, 0], points=[0, 0], topology=[]):
+    def __init__(self, day=0, nutrients=0, cells=[], trees=[[],[]], suns=[0, 0], points=[0, 0], topology=[], nutrients_decrease=0):
         self.day = day
         self.sun_direction = self.day % 6
         self.nutrients = nutrients
@@ -120,6 +127,7 @@ class State:
         self.suns = suns.copy()
         self.points = points.copy()
         self.topology = topology
+        self.nutrients_decrease = nutrients_decrease
     
     def copy(self):
         return State(day=self.day, nutrients=self.nutrients, cells=[cell.copy() for cell in self.cells], trees=self.trees.copy(), suns=self.suns.copy(), points=self.points.copy(), topology=self.topology)
@@ -131,38 +139,78 @@ class State:
                 res += 1
         return res
     
-    def plant(self, player, source, destination, cost=-1):
+    def can_plant(self, player, source, destination, cost=-1):
         cell = self.get_cell(destination)
         if cell.index == -1:
-            return False
-        if cell.tree != -1 or cell.richness == 0:
-            return False
+            return False, -1
+        if cell.tree != -1 or cell.richness == 0 or cell.is_dormant:
+            return False, -1
         # To not redo calculation
         cost = self.tree_cost(player, 0) if cost == -1 else cost
         if cost > self.suns[player]:
-            return False
-        cell.plant(player)
-        self.trees[player].append(destination)
-        self.suns[player] -= cost
-        self.get_cell(source).is_dormant = True
-        cell.is_dormant = True
-        return True
+            return False, -1
+        return True, cost
+
     
-    def grow(self, player, destination, my_tree_cost=-1):
+    def plant(self, player, source, destination, cost=-1):
+        cell = self.get_cell(destination)
+        can, cost = self.can_plant(player, source, destination, cost)
+        if can:
+            cell.plant(player)
+            self.trees[player].append(destination)
+            self.suns[player] -= cost
+            self.get_cell(source).is_dormant = True
+            cell.is_dormant = True
+            return True
+        return False
+    
+    def can_grow(self, player, destination, my_tree_cost=-1):
         cell = self.get_cell(destination)
         if cell.index == -1:
-            return False
-        if (not cell.tree in [0, 1, 2]) or cell.owner != player:
-            return False
+            return False, -1
+        if (not cell.tree in [0, 1, 2]) or cell.owner != player or cell.is_dormant:
+            return False, -1
         size_before = cell.tree
         first_cost = [1, 3, 7][size_before]
         # To not redo calculation
-        cost = first_cost + (self.tree_cost(player, size_before+1) if my_tree_cost == -1 else my_tree_cost)
+        cost = first_cost + (self.tree_cost(player, size_before+1) if my_tree_cost == -1 else my_tree_cost )
         if cost > self.suns[player]:
-            return False
-        self.suns[player] -= cost
-        cell.is_dormant = True
-        return True
+            return False, -1
+        return True, cost
+    
+    def grow(self, player, destination, my_tree_cost=-1):
+        cell = self.get_cell(destination)
+        can, cost = self.can_grow(player, destination, my_tree_cost)
+        if can:
+            self.suns[player] -= cost
+            cell.is_dormant = True
+            cell.tree += 1
+            return True
+        return False
+    
+    def can_complete(self, player, tree):
+        cell = self.get_cell(tree)
+        if cell.index == -1:
+            return False, -1
+        if (cell.tree != 3) or cell.owner != player:
+            return False, -1
+        cost = 4
+        if cost > self.suns[player]:
+            return False, -1
+        return True, cost
+    
+    def complete(self, player, tree):
+        cell = self.get_cell(tree)
+        can, cost = self.can_complete(player, tree)
+        if can:
+            self.suns[player] -= cost
+            self.points[player] += cell.richness + self.nutrients
+            self.nutrients_decrease += 1
+            self.cells[tree].owner = -1
+            self.cells[tree].size = -1
+            self.trees[player].remove(tree)
+            return True
+        return False
     
     def update_shadows(self, sun_direction):
         for cell in self.cells:
@@ -180,6 +228,8 @@ class State:
             self.day += 1
             self.sun_direction = self.day % 6
             self.update_shadows(self.sun_direction)
+            self.nutrients -= self.nutrients_decrease
+            self.nutrients_decrease = 0
             for i in range(len(self.suns)):
                 for tree in self.trees[i]:
                     self.suns[i] += self.cells[tree].tree
@@ -199,10 +249,9 @@ class State:
             node, distance = to_visit[0]
             visited += [node]
             to_visit = to_visit[1:]
-
             res.append(node)
             for neighbor in self.cells[node].neighbors:
-                if neighbor != -1 and (neighbor not in visited) and (neighbor not in [to_vis[0] for to_vis in to_visit]) and distance < max_distance:
+                if neighbor != -1 and (neighbor.index not in visited) and (neighbor.index not in [to_vis[0] for to_vis in to_visit]) and distance < max_distance:
                     to_visit += [(neighbor.index, distance+1)]
         return res
     
@@ -211,6 +260,155 @@ class State:
             return NO_CELL
         else:
             return self.cells[index]
+
+
+##########################
+# PLAYER           #######
+##########################
+
+
+class Player:
+    def __init__(self, index):
+        self.index = index
+    
+    def play(self, state):
+        actions = ""
+        return actions
+
+class IA_1(Player):
+    def __init__(self, index):
+        super().__init__(index)
+    
+    def play(self, state):
+        actions = ""
+        possible_actions = {}
+        me = self.index
+
+        remaining_days = 24-state.day
+        days_to_test = min(10, remaining_days)
+        grow_bonus = 5
+        max_trees = []
+        future_suns_wait = state.copy().next_day(remaining_days).suns[me]
+
+        for tree in state.trees[me]:
+            if(state.cells[tree].tree == 3):
+                max_trees.append(tree)
+                if(state.suns[0] >= 4 and random.randint(0, 100) < 0*(40-15*(state.day-10)**2)):
+                    actions = "COMPLETE "+str(tree) +' | ' + actions
+                    continue
+
+            try_state = state.copy()
+            if try_state.grow(me, tree):
+                future_suns = try_state.next_day(days_to_test).suns[me]
+                if not future_suns+grow_bonus in possible_actions:
+                    possible_actions[future_suns+grow_bonus] = []
+                possible_actions[future_suns+grow_bonus].append(('GROW '+str(tree), tree))
+
+            if remaining_days > 4:
+                cells_to_try_plant = []
+                for cell in state.nodes_around(tree, state.cells[tree].tree):
+                    if cell != -1 and state.cells[cell].tree == -1:
+                        cells_to_try_plant.append(cell)
+                for cell in sorted(cells_to_try_plant):
+                    try_state = state.copy()
+                    if try_state.plant(me, tree, cell):
+                        future_suns = try_state.next_day(days_to_test).suns[me]
+                        if not future_suns in possible_actions:
+                            possible_actions[future_suns] = []
+                        possible_actions[future_suns].append(('SEED '+str(tree)+' '+str(cell), cell))
+                        break
+
+        for future_suns in sorted(possible_actions):
+            for action in sorted(possible_actions[future_suns], key=lambda tup : tup[1]):
+                actions += action[0] + " | "
+
+        if remaining_days <= 2 and len(max_trees) > 0 and state.suns[0] >= 4:
+            actions = "COMPLETE " + str(max_trees[0]) + ' | '
+        return actions + "WAIT"
+
+
+class IA_2(Player):
+    def __init__(self, index):
+        super().__init__(index)
+        self.state_size = 37*3
+        std = 0.01
+        self.network = NeuralNetwork(std, [self.state_size, 30, 1])
+
+    
+    def play(self, state):
+        me = self.index
+
+        seed_cost = state.tree_cost(me, 0)
+        grow_costs = [state.tree_cost(me, i) for i in range(1,4)]
+        complete_cost = 4
+
+        try_to_seed = []
+        try_to_grow = []
+        try_to_complete = []
+
+        evaluated_states = []
+
+        for tree in state.trees[me]:
+            # Try seeding
+            for cell_id in state.nodes_around(tree, state.cells[tree].tree):
+                if state.can_plant(me, tree, cell_id, cost=seed_cost)[0]:
+                    try_state = state.copy()
+                    try_state.plant(me, tree, cell_id, cost=seed_cost)
+                    try_to_seed.append(try_state)
+                    evaluated_states.append(('SEED '+str(tree)+' '+str(cell_id), self.grade_state(try_state)))
+            # Try growing
+            if state.can_grow(me, tree, my_tree_cost=grow_costs[state.cells[tree].tree-1])[0]:
+                try_state = state.copy()
+                try_state.grow(me, tree, my_tree_cost=grow_costs[state.cells[tree].tree-1])
+                try_to_grow.append(try_state)
+                evaluated_states.append(('GROW '+str(tree), self.grade_state(try_state)))
+            # Try completing
+            if state.can_complete(me, tree)[0]:
+                try_state = state.copy()
+                try_state.complete(me, tree)
+                try_to_complete.append(try_state)
+                evaluated_states.append(('COMPLETE '+str(tree), self.grade_state(try_state)))
+        if len(evaluated_states) == 0:
+            return "WAIT"
+
+        evaluated_states.sort(key=lambda tup : tup[1][0], reverse=True)
+        return evaluated_states[0][0]
+    
+    def grade_state(self, try_state):
+        state_description = []
+        for cell in try_state.cells:
+            state_description += [float(cell.is_dormant), float(cell.richness), (cell.tree+1)*(2*float(cell.owner == self.index)-0.5)]
+        state_description = np.array(state_description).reshape((self.state_size, 1))
+        return self.network.forward(state_description)
+
+
+class NeuralNetwork():
+    def __init__(self, std, layer_sizes=[], weights = [], biases = []):
+        self.weights = []
+        self.biases = []
+        self.layer_sizes = layer_sizes.copy()
+        if len(self.weights) != 0:
+            for i in range(len(layer_sizes)-1):
+                self.weights.append(np.random.randn(layer_sizes[i+1], layer_sizes[i])*std)
+                self.biases.append(np.random.randn(layer_sizes[i+1], 1)*std)
+        else:
+            self.weights = [w.copy() for w in weights]
+            self.biases = [b.copy() for b in weights]
+    
+    def forward(self, input_vector):
+        intermediate = input_vector
+        for i in range(len(self.weights)):
+            intermediate = np.dot(self.weights[i], intermediate)+self.biases[i]
+            intermediate = 1/(1 + np.exp(-1*intermediate))
+        return intermediate
+    
+    def copy(self):
+        return NeuralNetwork(self, 0, self.layer_sizes, self.weights, self.biases)
+
+
+##########################
+# GAME ENGINE      #######
+##########################
 
 
 
@@ -294,56 +492,16 @@ class Game:
                 continue
             if len(descriptions[i]) == 2:
                 action, tree = descriptions[i]
-                self.state.grow(i, int(tree))
-                continue
+                if action[0] == 'G':
+                    self.state.grow(i, int(tree))
+                    continue
+                if action[0] == 'C':
+                    self.state.complete(i, int(tree))
+                    continue
             if len(descriptions[i]) == 3:
                 action, source, destination = descriptions[i]
                 self.state.plant(i, int(source), int(destination))
                 continue
-            
-            
-
-
-##########################
-# PLAYER           #######
-##########################
-
-
-class Player:
-    def __init__(self, index):
-        self.index = index
-    
-    def play(self, state):
-        actions = ""
-        return actions
-
-class IA_1(Player):
-    def __init__(self, index):
-        super().__init__(index)
-    
-    def play(self, state):
-        actions = ""
-        possible_actions = {}
-        me = self.index
-        for tree in state.trees[me]:
-            try_state = state.copy()
-            if try_state.grow(me, tree):
-                future_suns = try_state.next_day(24-try_state.day).suns[me]
-                if not future_suns in possible_actions:
-                    possible_actions[future_suns] = []
-                possible_actions[future_suns].append(('GROW '+str(tree), tree))
-
-            for cell in state.nodes_around(tree, state.cells[tree].tree):
-                try_state = state.copy()
-                if try_state.plant(me, tree, cell):
-                    future_suns = try_state.next_day(24-try_state.day).suns[me]
-                    if not future_suns in possible_actions:
-                        possible_actions[future_suns] = []
-                    possible_actions[future_suns].append(('SEED '+str(tree)+' '+str(cell), cell))
-        for future_suns in sorted(possible_actions):
-            for action in sorted(possible_actions[future_suns], key=lambda tup : tup[1]):
-                actions += action[0] + " | "
-        return actions + "WAIT"
 
 
 ##########################
@@ -352,11 +510,16 @@ class IA_1(Player):
 
 
 def main():
+
     player_0 = IA_1(0)
-    player_1 = IA_1(1)
+    player_1 = IA_2(1)
     game = Game(player_0, player_1, diameter = 4, first_trees = 2,  first_stones = 2)
+
     for i in range(24):
-        print(game.state.day, game.state.suns)
+        print('')
+        print(game.state.day, game.state.suns, game.state.points)
+        print([(tree, game.state.cells[tree].tree) for tree in game.state.trees[game.player_0.index]])
+        print([(tree, game.state.cells[tree].tree) for tree in game.state.trees[game.player_1.index]])
         game.play_turn()
     
 
