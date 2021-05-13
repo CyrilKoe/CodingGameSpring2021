@@ -1,74 +1,7 @@
+import sys
+import math
 import random
 import numpy as np
-import sys
-
-TOPO = []
-
-##########################
-# WORLD GENERATION #######
-##########################
-
-def add_neighbor(topology, node, neighbor, direction):
-    topology[node][direction%6] = neighbor
-    topology[neighbor][(direction+3)%6] = node
-    return
-
-def connect_circles(topology, diameter):
-    node = 1
-    for circle in range(1, diameter):
-        direction = 2
-        for j in range(6*circle):
-            if j == 6*circle-1:
-                add_neighbor(topology, node, node-j, 1)
-            else:
-                add_neighbor(topology, node, node+1, direction)
-                if (j+1)%circle == 0:
-                    direction += 1
-            node += 1
-    return
-
-def connect_up_side(topology, node, circle, direction):
-    perimeter = circle*6
-    for i in range(circle):
-        neighbor = node + perimeter + direction
-        add_neighbor(topology, node, neighbor, 0+direction)
-        up_neighbor = topology[neighbor][(2+direction)%6]
-        add_neighbor(topology, node, up_neighbor, 1+direction)
-        if i == 0:
-            down_neighbor = topology[neighbor][(4+direction)%6]
-            add_neighbor(topology, node, down_neighbor, 5+direction)
-        node += 1
-    return node
-
-def build_map(diameter=4):
-    map_size = sum([6*i for i in range(diameter)])+1
-    topology = {i : [-1 for i in range(6)] for i in range(map_size)}
-    connect_circles(topology, diameter)
-    for i in range(0, 6):
-        add_neighbor(topology, 0, i+1, i)
-    node = 1
-    for circle in range(1,diameter):
-        for direction in range(6):
-            if circle < diameter-1:
-                node = connect_up_side(topology, node, circle, direction)
-    return topology
-
-
-def nodes_around(topology, root, max_distance):
-    res = {i : [] for i in range(max_distance+1)}
-    to_visit = [(root, 0)]
-    visited = []
-    while len(to_visit) > 0:
-        node, distance = to_visit[0]
-        visited += [node]
-        to_visit = to_visit[1:]
-
-        res[distance].append(node)
-        for neighbor in topology[node]:
-            if neighbor != -1 and (neighbor not in visited) and (neighbor not in [to_vis[0] for to_vis in to_visit]) and distance < max_distance:
-                to_visit += [(neighbor, distance+1)]
-    return res
-
 
 ##########################
 # WORLD            #######
@@ -454,65 +387,79 @@ class NeuralNetwork():
             noise_b = np.heaviside(np.random.uniform(0, 100, self.biases[i].shape) - coverage, 0) * np.random.randn(self.biases[i].shape[0], self.biases[i].shape[1])
             self.weights[i] += noise
             self.biases[i] += noise_b
+
 ##########################
 # MAIN             #######
 ##########################
 
+player = IA_1(0)
 
-def main():
-    player_0 = IA_1(0)
-    player_1 = Player(1)
-    print(Game(player_0, player_1).play_game(verbose=True))
+richnesses = {}
+topology = {}
 
+# Read topology and richnesses
+number_of_cells = int(input())  # 37
+for i in range(number_of_cells):
+    index, richness, neigh_0, neigh_1, neigh_2, neigh_3, neigh_4, neigh_5 = [int(j) for j in input().split()]
+    richnesses[index] = richness
+    topology[index] = [neigh_0, neigh_1, neigh_2, neigh_3, neigh_4, neigh_5]
+
+
+# Create WorldCells
+cells = []
+for cell_idx in topology:
+    cells += [WorldCell(index=cell_idx, richness=richnesses[cell_idx])]
+for cell in cells:
+    for direction, neighbor_idx in enumerate(topology[cell.index]):
+        if topology[cell.index][direction] != -1:
+            cell.add_neighbor(cells[neighbor_idx], direction)
+
+
+# Create game state
+game_state = State(day=0, nutrients=20, cells=cells, topology=topology)
+
+
+# Game loop
+while True:
+    day = int(input()) 
+    nutrients = int(input())
+    sun, score = [int(i) for i in input().split()]
+    inputs = input().split()
+    opp_sun = int(inputs[0])
+    opp_score = int(inputs[1])
+    opp_is_waiting = inputs[2] != "0"
+
+    for cell in game_state.cells:
+        cell.tree = -1
+        cell.owner = -1
+        cell.is_dormant = False
+
+    trees = [[], []]
+    number_of_trees = int(input())
+    for i in range(number_of_trees):
+        inputs = input().split()
+        cell_index = int(inputs[0])
+        size = int(inputs[1])
+        is_mine = inputs[2] != "0"
+        is_dormant = inputs[3] != "0"
+
+        cell = game_state.get_cell(cell_index)
+        cell.tree = size
+        cell.owner = 0 if is_mine else 1
+        cell.is_dormant = is_dormant
+        trees[cell.owner].append(cell_index)
     
-def train_IA_2():
 
-    n_population = 50
-    n_fights = 10
-    n_generations = 100
-    n_repro = 10
-
-    players = [IA_2(666) for i in range(n_population)]
-
-    for generation in range(n_generations):
-
-        scores = [[i, 0] for i in range(n_population)]
-        for p_0_idx, p_0 in enumerate(players):
-            for i in range(n_fights):
-                #print(p_0_idx, i)
-                p_1_idx = random.randint(0, n_population-1)
-                p_1 = players[p_1_idx]
-                if p_1 != p_0:
-                    p_0.index = 0
-                    p_1.index = 1
-                    winner, points_0, points_1 = Game(p_0, p_1).play_game()
-                    scores[p_0_idx][1] += points_0 + (15 if winner == 0 else -15)
-                    scores[p_1_idx][1] += points_1 + (15 if winner == 1 else -15)
-        
-        scores.sort(key=lambda tup : tup[1], reverse=True)
-
-        print(scores)
-        
-        new_players = []
-
-        for i in range(n_repro):
-            for parameters in [(0, 0), (10, 0.01), (20, 0.02), (30, 0.015)]:
-                new_play = players[scores[i][0]].copy()
-                new_play.mutate(parameters[0], parameters[1])
-                new_players.append(new_play)
-                   
-        while len(new_players) < n_population:
-            new_players.append(IA_2(666))
-        
-        players = new_players
+    possible_actions = []
+    number_of_possible_actions = int(input())  # all legal actions
+    for i in range(number_of_possible_actions):
+        possible_actions.append(input())   # try printing something from here to start with
+    print(day, number_of_possible_actions, possible_actions, file=sys.stderr)
     
-        for i in range(1):
-            np.savetxt('weights_0.csv', players[i].network.weights[0], delimiter=',')
-            np.savetxt('weights_1.csv', players[i].network.weights[1], delimiter=',')
-            np.savetxt('biases_0.csv', players[i].network.biases[0], delimiter=',')
-            np.savetxt('biases_1.csv', players[i].network.biases[1], delimiter=',')
-
-
-
-if __name__ == "__main__":
-    main()
+    game_state.day = day
+    game_state.nutrients = nutrients
+    game_state.suns = [sun, opp_sun]
+    game_state.score = [score, opp_score]
+    game_state.trees = trees
+    
+    print(player.play(game_state.copy())+' :) ')
