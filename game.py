@@ -290,7 +290,7 @@ class IA_1(Player):
         super().__init__(index)
 
     def play(self, state):
-        depth = 1
+        depth = 2
         last_depth = 0
         evaluated_states = [self.all_actions(state)] + [[] for i in range(depth)]
         for i in range(depth):
@@ -326,9 +326,10 @@ class IA_1(Player):
 
         evaluated_states = [[(last_actions+'WAIT', state.copy(), self.grade_state(state.copy(), 0))], [], [], []]
 
+
         for tree in state.trees[me]:
             # Try seeding
-            if last_action != "SEED":
+            if not 'SEED' in last_actions_list:
                 for cell_id in state.nodes_around(tree, state.cells[tree].tree):
                     if state.can_plant(me, tree, cell_id, cost=seed_cost)[0]:
                         try_state = state.copy()
@@ -344,7 +345,7 @@ class IA_1(Player):
                 try_state = state.copy()
                 try_state.complete(me, tree)
                 evaluated_states[3].append((last_actions+'COMPLETE '+str(tree), try_state, self.grade_state(try_state, 3)))
-
+    
         return [max(evaluated_states[k], key=lambda tup : tup[2]) for k in range(len(evaluated_states)) if len(evaluated_states[k]) > 0]
 
     def grade_state(self, try_state, action): #Action = {0 : WAIT, 1 : SEED, 2 : GROW , 3 : COMPLETE}
@@ -454,6 +455,119 @@ class NeuralNetwork():
             noise_b = np.heaviside(np.random.uniform(0, 100, self.biases[i].shape) - coverage, 0) * np.random.randn(self.biases[i].shape[0], self.biases[i].shape[1])
             self.weights[i] += noise
             self.biases[i] += noise_b
+
+
+
+##########################
+# GAME ENGINE      #######
+##########################
+
+
+class Game:
+    def __init__(self, player_0, player_1, diameter=4, first_trees=2, first_stones=2):
+        self.topology = build_map(diameter)
+
+        # Richness
+        self.richness = {}
+        nodes_distances = nodes_around(self.topology, 0, diameter-1)
+        for distance in nodes_distances:
+            nodes_distances[distance].sort()
+            for node in nodes_distances[distance]:
+                self.richness[node] = diameter-distance if distance > 1 else 3
+        # Cells
+        cells = []
+        for cell_idx in self.topology:
+            cells += [WorldCell(index=cell_idx, richness=self.richness[cell_idx])]
+        for cell in cells:
+            for direction, neighbor_idx in enumerate(self.topology[cell.index]):
+                if self.topology[cell.index][direction] != -1:
+                    cell.add_neighbor(cells[neighbor_idx], direction)
+        # Firsts trees and stones
+        to_plant = first_trees
+        to_stone = first_stones
+        trees = [[], []]
+        while to_plant+to_stone > 0:
+            dist = random.randint(1, diameter-1)
+            n = len(nodes_distances[dist])
+            idx = random.randint(0, n-1)
+            cell_idx_1 = nodes_distances[dist][idx]
+            cell_idx_2 = nodes_distances[dist][int(idx+n/2)%n]
+            if cells[cell_idx_1].owner != -1 or cells[cell_idx_1].richness == 0:
+                continue
+            if to_plant > 0:
+                cells[cell_idx_1].plant(0)
+                cells[cell_idx_1].tree = 1
+                cells[cell_idx_2].plant(1)
+                cells[cell_idx_2].tree = 1
+                to_plant -= 1
+                trees[0].append(cell_idx_1)
+                trees[1].append(cell_idx_2)
+            elif to_stone > 0:
+                cells[cell_idx_1].richness = 0
+                cells[cell_idx_2].richness = 0
+                to_stone -= 1   
+        self.state = State(day=0, nutrients=20, cells=cells, trees=trees, topology=self.topology)
+        self.player_0 = player_0
+        self.player_1 = player_1
+
+    def get_copy_state(self):
+        return self.state.copy()
+    
+    def play_turn(self, verbose = False):
+        actions_0 = self.player_0.play(self.get_copy_state()).split(' | ')
+        actions_1 = self.player_1.play(self.get_copy_state()).split(' | ')
+        
+        action_0 = actions_0[0]
+        action_1 = actions_1[0]
+
+        if verbose:
+            print("Player 0", action_0)
+            print("Player 1", action_1)
+
+        if action_0[0] == 'W' and action_1[0] == 'W':
+            self.state.next_day()
+        else:
+            self.play_actions([action_0, action_1])
+    
+    def play_actions(self, actions = ['', '']):  
+        descriptions = [[], []]
+        for i in range(len(actions)):
+            if actions[i] != '':
+                descriptions[i] = actions[i].split(' ')
+        
+        # Planting at the same spot
+        if actions[0] != '' and actions[0][0] == 'S' and actions[0] == actions[1]:
+            for action, source, destination in descriptions:
+                self.state.get_cell(int(source)).is_dormant = True
+                return
+        
+        for i in range(len(descriptions)):
+            if len(descriptions[i]) < 2:
+                continue
+            if len(descriptions[i]) == 2:
+                action, tree = descriptions[i]
+                if action[0] == 'G':
+                    self.state.grow(i, int(tree))
+                    continue
+                if action[0] == 'C':
+                    self.state.complete(i, int(tree))
+                    continue
+            if len(descriptions[i]) == 3:
+                action, source, destination = descriptions[i]
+                self.state.plant(i, int(source), int(destination))
+                continue
+    
+    def play_game(self, verbose=False):
+        self.state.next_day()
+        while self.state.day < 24:
+            if verbose:
+                print(" ")
+                print('Day',self.state.day, ", Suns : ", self.state.suns, ", Points : ", self.state.points)
+                print([(t, self.state.cells[t].tree) for t in self.state.trees[0]])
+                print([(t, self.state.cells[t].tree) for t in self.state.trees[1]])
+            self.play_turn(verbose)
+
+
 ##########################
 # MAIN             #######
 ##########################

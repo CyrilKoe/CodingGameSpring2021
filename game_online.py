@@ -223,7 +223,7 @@ class IA_1(Player):
         super().__init__(index)
 
     def play(self, state):
-        depth = 1
+        depth = 2
         last_depth = 0
         evaluated_states = [self.all_actions(state)] + [[] for i in range(depth)]
         for i in range(depth):
@@ -259,9 +259,10 @@ class IA_1(Player):
 
         evaluated_states = [[(last_actions+'WAIT', state.copy(), self.grade_state(state.copy(), 0))], [], [], []]
 
+
         for tree in state.trees[me]:
             # Try seeding
-            if last_action != "SEED":
+            if not 'SEED' in last_actions_list:
                 for cell_id in state.nodes_around(tree, state.cells[tree].tree):
                     if state.can_plant(me, tree, cell_id, cost=seed_cost)[0]:
                         try_state = state.copy()
@@ -277,7 +278,7 @@ class IA_1(Player):
                 try_state = state.copy()
                 try_state.complete(me, tree)
                 evaluated_states[3].append((last_actions+'COMPLETE '+str(tree), try_state, self.grade_state(try_state, 3)))
-
+    
         return [max(evaluated_states[k], key=lambda tup : tup[2]) for k in range(len(evaluated_states)) if len(evaluated_states[k]) > 0]
 
     def grade_state(self, try_state, action): #Action = {0 : WAIT, 1 : SEED, 2 : GROW , 3 : COMPLETE}
