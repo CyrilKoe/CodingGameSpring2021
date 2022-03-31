@@ -286,55 +286,77 @@ class Player:
 
 
 class IA_1(Player):
-    def __init__(self, index):
+    def __init__(self, index, depth=1, grow_explore=1):
         super().__init__(index)
+        self.depth = depth
+        self.grow_explore = grow_explore
+
 
     def play(self, state):
-        depth = 2
         last_depth = 0
-        evaluated_states = [self.all_actions(state)] + [[] for i in range(depth)]
-        for i in range(depth):
+        evaluated_states = [self.all_actions(state)] + [[] for i in range(self.depth)]
+        for i in range(self.depth):
             for (actions, last_state, points) in evaluated_states[i]:
                 evaluated_states[i+1] += self.all_actions(last_state, actions+' | ')
             if len(evaluated_states[i+1]) > 0:
                 last_depth = i+1
         
-        #print(evaluated_states)
-        #print(evaluated_states[last_depth])
-        #print(max(evaluated_states[last_depth], key=lambda tup : tup[2]))
+        full_max = 0
+        full_max_action = 'WAIT'
+        
+        for i in range(self.depth):
+            if len(evaluated_states[i]) == 0:
+                break
+            depth_max_action, _, depth_max = max(evaluated_states[i], key=lambda tup : tup[2])
+            if depth_max > full_max:
+                full_max = depth_max
+                full_max_action = depth_max_action
+            
 
-
-        return max(evaluated_states[last_depth], key=lambda tup : tup[2])[0]
+        return full_max_action
     
     def all_actions(self, state, last_actions = ''):
+        if state.day > 24:
+            return []
         last_actions_list = []
         if last_actions != '':
             last_actions_list = last_actions.split(' | ')
             last_actions_list = last_actions_list[0:len(last_actions_list)-1]
-            if "WAIT" in last_actions_list:
-                return []
-
 
         me = self.index
+
+        all_trees = [[] for i in range(4)]
+        for cell in state.trees[me]:
+            all_trees[state.cells[cell].tree].append(cell)
+
+        for i in range(4):
+            all_trees[i].sort()
+        
         seed_cost = state.tree_cost(me, 0)
-        grow_costs = [state.tree_cost(me, i) for i in range(0,4)]+[666]
+        grow_costs = [len(all_trees[i]) for i in range(0,4)]+[666]
         complete_cost = 4
 
         try_to_seed = []
         try_to_grow = []
         try_to_complete = []
 
-        evaluated_states = [[(last_actions+'WAIT', state.copy(), self.grade_state(state.copy(), 0))], [], [], []]
+        evaluated_states = [[], [], [], []]
 
+        if len(last_actions) > 0 and last_actions[-1] != 'WAIT':
+            evaluated_states[0].append((last_actions+'WAIT', state.copy(), self.grade_state(state.copy(), 0)))
 
-        for tree in state.trees[me]:
-            # Try seeding
-            if not 'SEED' in last_actions_list:
+        for i in range(1, 4):
+            n = len(all_trees[i])
+            for j in range(min(n, self.grow_explore)):
+                tree = all_trees[i][j]
+                # Try seeding
                 for cell_id in state.nodes_around(tree, state.cells[tree].tree):
                     if state.can_plant(me, tree, cell_id, cost=seed_cost)[0]:
                         try_state = state.copy()
                         try_state.plant(me, tree, cell_id, cost=seed_cost)
                         evaluated_states[1].append((last_actions+'SEED '+str(tree)+' '+str(cell_id), try_state, self.grade_state(try_state, 1)))
+
+        for tree in state.trees[me]:
             # Try growing
             if state.can_grow(me, tree, my_tree_cost=grow_costs[state.cells[tree].tree+1])[0]:
                 try_state = state.copy()
@@ -345,14 +367,15 @@ class IA_1(Player):
                 try_state = state.copy()
                 try_state.complete(me, tree)
                 evaluated_states[3].append((last_actions+'COMPLETE '+str(tree), try_state, self.grade_state(try_state, 3)))
-    
         return [max(evaluated_states[k], key=lambda tup : tup[2]) for k in range(len(evaluated_states)) if len(evaluated_states[k]) > 0]
 
     def grade_state(self, try_state, action): #Action = {0 : WAIT, 1 : SEED, 2 : GROW , 3 : COMPLETE}
         remaining_days = 24-try_state.day
-        days_to_test = remaining_days if remaining_days < 5 else 5
+        days_to_test = 1 #remaining_days if remaining_days < 5 else 5
         future_state = try_state.copy().next_day(days_to_test) 
-        future_suns = future_state.suns[self.index] - future_state.suns[1-self.index] + (5-days_to_test+0.5)*future_state.points[self.index]
+        future_suns = future_state.suns[self.index] - future_state.suns[1-self.index] + (max(0, 3-days_to_test)+0.1)*(future_state.points[self.index] - future_state.points[1-self.index])
+        if action == 0:
+            try_state.next_day()
         return future_suns
 
 
@@ -364,7 +387,7 @@ class IA_1(Player):
 class IA_2(Player):
     def __init__(self, index, network=None):
         super().__init__(index)
-        self.state_size = 37*3
+        self.state_size = 37*3 + 5
         std = 0.01
         if network:
             self.network = network.copy()
@@ -413,7 +436,7 @@ class IA_2(Player):
         return evaluated_states[0][0]
     
     def grade_state(self, try_state):
-        state_description = []
+        state_description = [float(try_state.day), float(try_state.points[self.index]), float(try_state.points[1-self.index]), float(try_state.suns[self.index]), float(try_state.suns[1-self.index])]
         for cell in try_state.cells:
             state_description += [float(cell.is_dormant), float(cell.richness), (cell.tree+1)*(2*float(cell.owner == self.index)-0.5)]
         state_description = np.array(state_description).reshape((self.state_size, 1))
@@ -574,9 +597,19 @@ class Game:
 
 
 def main():
-    player_0 = IA_1(0)
-    player_1 = Player(1)
+    player_0 = IA_1(0, depth=4, grow_explore=1)
+    player_1 = IA_2(1)
     print(Game(player_0, player_1).play_game(verbose=True))
+    return
+
+    g = Game(player_0, player_1)
+    state = g.state
+    dic = {c.index : [[],[],[],[]] for c in state.cells}
+    for c in state.cells:
+        for i in range(4):
+            dic[c.index][i] = state.nodes_around(c.index, i)
+    print(dic)
+    return
 
     
 def train_IA_2():

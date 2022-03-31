@@ -1,0 +1,2 @@
+This repository contains my replication of the game as well as my proposed AI player for the CodingGame Spring Challenge 2021 ( https://www.codingame.com/contests/spring-challenge-2021 ). It is based on a simple tree exploration. An other agent was proposed using a neural network with genetic algorithm based training. The training was not completed.
+https://www.codingame.com/contests/spring-challenge-2021

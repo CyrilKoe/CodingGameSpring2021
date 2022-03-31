@@ -223,7 +223,7 @@ class IA_1(Player):
         super().__init__(index)
 
     def play(self, state):
-        depth = 2
+        depth = 10
         last_depth = 0
         evaluated_states = [self.all_actions(state)] + [[] for i in range(depth)]
         for i in range(depth):
@@ -231,11 +231,6 @@ class IA_1(Player):
                 evaluated_states[i+1] += self.all_actions(last_state, actions+' | ')
             if len(evaluated_states[i+1]) > 0:
                 last_depth = i+1
-        
-        #print(evaluated_states)
-        #print(evaluated_states[last_depth])
-        #print(max(evaluated_states[last_depth], key=lambda tup : tup[2]))
-
 
         return max(evaluated_states[last_depth], key=lambda tup : tup[2])[0]
     
@@ -247,10 +242,17 @@ class IA_1(Player):
             if "WAIT" in last_actions_list:
                 return []
 
-
         me = self.index
+
+        all_trees = [[] for i in range(4)]
+        for cell in state.trees[me]:
+            all_trees[state.cells[cell].tree].append(cell)
+
+        for i in range(4):
+            all_trees[i].sort()
+        
         seed_cost = state.tree_cost(me, 0)
-        grow_costs = [state.tree_cost(me, i) for i in range(0,4)]+[666]
+        grow_costs = [len(all_trees[i]) for i in range(0,4)]+[666]
         complete_cost = 4
 
         try_to_seed = []
@@ -259,15 +261,18 @@ class IA_1(Player):
 
         evaluated_states = [[(last_actions+'WAIT', state.copy(), self.grade_state(state.copy(), 0))], [], [], []]
 
-
-        for tree in state.trees[me]:
-            # Try seeding
-            if not 'SEED' in last_actions_list:
+        for i in range(1, 4):
+            n = len(all_trees[i])
+            if n > 0:
+                tree = all_trees[i][0:n]
+                # Try seeding
                 for cell_id in state.nodes_around(tree, state.cells[tree].tree):
                     if state.can_plant(me, tree, cell_id, cost=seed_cost)[0]:
                         try_state = state.copy()
                         try_state.plant(me, tree, cell_id, cost=seed_cost)
                         evaluated_states[1].append((last_actions+'SEED '+str(tree)+' '+str(cell_id), try_state, self.grade_state(try_state, 1)))
+
+        for tree in state.trees[me]:
             # Try growing
             if state.can_grow(me, tree, my_tree_cost=grow_costs[state.cells[tree].tree+1])[0]:
                 try_state = state.copy()
@@ -388,6 +393,7 @@ class NeuralNetwork():
             noise_b = np.heaviside(np.random.uniform(0, 100, self.biases[i].shape) - coverage, 0) * np.random.randn(self.biases[i].shape[0], self.biases[i].shape[1])
             self.weights[i] += noise
             self.biases[i] += noise_b
+
 
 ##########################
 # MAIN             #######
